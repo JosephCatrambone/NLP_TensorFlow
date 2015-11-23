@@ -15,13 +15,13 @@ csv.field_size_limit(sys.maxsize)
 INPUT_FILENAME = sys.argv[1]
 DATA_COLUMN = int(sys.argv[2])
 LEARNING_RATE = 0.01
-TRAINING_ITERATIONS = 200000
-BATCH_SIZE = 1
-SENTENCE_LIMIT = 140 # Empty pad after this.
+TRAINING_ITERATIONS = 20000000
+BATCH_SIZE = 10
+SENTENCE_LIMIT = 20 # Empty pad after this.
 N_INPUTS = bitreader.get_sentence_vector_length(SENTENCE_LIMIT)
 WORD_CHUNK_SIZE = 4
 DROPOUT = 0.8
-DISPLAY_INCREMENT = 100
+DISPLAY_INCREMENT = 50
 
 # Create model
 x = tf.placeholder(tf.types.float32, [None, 1, N_INPUTS, 1])
@@ -46,21 +46,30 @@ def build_model(name, inputs, dropout_toggle, char_sample_size=WORD_CHUNK_SIZE):
 	bc2 = tf.Variable(tf.random_normal([32,]))
 	conv2 = tf.nn.conv2d(act1, wc2, strides=[1, 1, 1, 1], padding='SAME')# + bc2
 	act2 = tf.nn.relu(conv2)
+	norm2 = tf.nn.lrn(act2, bitreader.get_sentence_vector_length(1), bias=1.0, alpha=0.001, beta=0.75)
 	# TensorShape([Dimension(None), Dimension(1), Dimension(4620), Dimension(32)])
 
-	wf1 = tf.Variable(tf.random_normal([sample_vec_len*32, 128]))
-	full1 = tf.batch_matmul(act2, wf1)
+	# Conv -> FC
+	dims = act2.get_shape()
+	shape = [dims[0].value, dims[1].value, dims[2].value, dims[3].value] # dims[0].value -> None
+	c_fc = tf.reshape(act2, [-1, shape[1]*shape[2]*shape[3]])
+
+	wf1 = tf.Variable(tf.random_normal([shape[1]*shape[2]*shape[3], 128]))
+	full1 = tf.matmul(c_fc, wf1)
 	act3 = tf.nn.relu(full1)
 
 	encoder = act3
 
-	wf2 = tf.Variable(tf.random_normal([128, sample_vec_len*32]))
-	full2 = tf.batch_matmul(act3, wf2)
+	wf2 = tf.Variable(tf.random_normal([128, shape[1]*shape[2]*shape[3]]))
+	full2 = tf.matmul(act3, wf2)
 	act4 = tf.nn.relu(full2)
+
+	# FC -> Conv
+	fc_c = tf.reshape(act4, [-1, shape[1], shape[2], shape[3]])
 
 	wc3 = tf.Variable(tf.random_normal([1, char_sample_size, 32, 64]))
 	bc3 = tf.Variable(tf.random_normal([64,]))
-	conv3 = tf.nn.conv2d(act4, wc3, strides=[1, 1, 1, 1], padding='SAME')# + bc3
+	conv3 = tf.nn.conv2d(fc_c, wc3, strides=[1, 1, 1, 1], padding='SAME')# + bc3
 	act5 = tf.nn.relu(conv3)
 	# TensorShape([Dimension(None), Dimension(1), Dimension(4620), Dimension(64)])
 
@@ -68,8 +77,9 @@ def build_model(name, inputs, dropout_toggle, char_sample_size=WORD_CHUNK_SIZE):
 	bc4 = tf.Variable(tf.random_normal([1,]))
 	conv4 = tf.nn.conv2d(act5, wc4, strides=[1, 1, 1, 1], padding='SAME')# + bc4
 	act6 = tf.nn.relu(conv4)
+	norm3 = tf.nn.lrn(act6, bitreader.get_sentence_vector_length(1), bias=1.0, alpha=0.001, beta=0.75)
 
-	decoder = act6
+	decoder = norm3
 
 	return encoder, decoder, [wc1, wc2, wf1, wf2, wc3, wc4], [bc1, bc2, bc3, bc4]
 
@@ -81,8 +91,8 @@ def norm(name, l_input, lsize):
 
 encoder, decoder, weights, biases = build_model("ConvNLP", x, keep_prob)
 
-#l2_cost = tf.reduce_mean(tf.nn.l2_loss(reconstruction, x))
-l1_cost = tf.reduce_mean(tf.abs(tf.sub(x, decoder)))
+#l2_cost = tf.reduce_sum(tf.nn.l2_loss(reconstruction, x))
+l1_cost = tf.reduce_sum(tf.abs(tf.sub(x, decoder)))
 cost = l1_cost
 optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(cost)
 
@@ -122,9 +132,8 @@ with tf.Session() as sess:
 			loss = sess.run(cost, feed_dict={x: batch_xs, keep_prob: 1.})
 			enc, rec = sess.run([encoder, decoder], feed_dict={x: batch_xs, keep_prob: 1.})
 			print("Iter " + str(step*BATCH_SIZE) + ", Loss= " + "{:.6f}".format(loss))
-			print("Example: {} -> {}".format(batch_xs[0], enc))
+			print("Mapping {} -> {}".format(enc.shape, rec.shape))
 			print("Example: {} -> {}".format(bitreader.vector_to_string(batch_xs[0,0,:,0]), bitreader.vector_to_string(rec[0,0,:,0])))
-
 		step += 1
 	print "Optimization Finished!"
 	# sess.run(accuracy, feed_dict={x: asdf, keep_prob: 1.})
