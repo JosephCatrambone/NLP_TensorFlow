@@ -16,19 +16,23 @@ INPUT_FILENAME = sys.argv[1]
 DATA_COLUMN = int(sys.argv[2])
 LEARNING_RATE = 0.01
 TRAINING_ITERATIONS = 20000000
-BATCH_SIZE = 10
-SENTENCE_LIMIT = 20 # Empty pad after this.
+BATCH_SIZE = 5
+SENTENCE_LIMIT = 140 # Empty pad after this.
 N_INPUTS = bitreader.get_sentence_vector_length(SENTENCE_LIMIT)
 WORD_CHUNK_SIZE = 4
 DROPOUT = 0.8
-DISPLAY_INCREMENT = 50
+DISPLAY_INCREMENT = 1
 
 # Create model
 x = tf.placeholder(tf.types.float32, [None, 1, N_INPUTS, 1])
 keep_prob = tf.placeholder(tf.types.float32) #dropout
 
 def build_model(name, inputs, dropout_toggle, char_sample_size=WORD_CHUNK_SIZE):
-	x = tf.reshape(inputs, shape=[-1, 1, N_INPUTS, 1])
+	#x = tf.reshape(inputs, shape=[-1, 1, N_INPUTS, 1])
+
+	filter_bank_0 = 16
+	filter_bank_1 = 8
+	filter_bank_3 = 64
 
 	# conv2d input is [b, h, w, d]
 	# filter is [h, w, ...]
@@ -36,46 +40,56 @@ def build_model(name, inputs, dropout_toggle, char_sample_size=WORD_CHUNK_SIZE):
 
 	sample_vec_len = bitreader.get_sentence_vector_length(char_sample_size)
 
-	wc1 = tf.Variable(tf.random_normal([1, sample_vec_len, 1, 64]))
-	bc1 = tf.Variable(tf.random_normal([64,]))
-	conv1 = tf.nn.conv2d(x, wc1, strides=[1, 1, 1, 1], padding='SAME')# + bc1
+	wc1 = tf.Variable(tf.random_normal([1, sample_vec_len, 1, filter_bank_0]))
+	bc1 = tf.Variable(tf.random_normal([filter_bank_0,]))
+	conv1 = tf.nn.conv2d(inputs, wc1, strides=[1, 1, 1, 1], padding='SAME') + bc1
 	act1 = tf.nn.relu(conv1)
 	# TensorShape([Dimension(None), Dimension(1), Dimension(4620), Dimension(64)])
 
-	wc2 = tf.Variable(tf.random_normal([1, char_sample_size, 64, 32]))
-	bc2 = tf.Variable(tf.random_normal([32,]))
-	conv2 = tf.nn.conv2d(act1, wc2, strides=[1, 1, 1, 1], padding='SAME')# + bc2
+	wc2 = tf.Variable(tf.random_normal([1, char_sample_size, filter_bank_0, filter_bank_1]))
+	bc2 = tf.Variable(tf.random_normal([filter_bank_1,]))
+	conv2 = tf.nn.conv2d(act1, wc2, strides=[1, 1, 1, 1], padding='SAME') + bc2
 	act2 = tf.nn.relu(conv2)
 	norm2 = tf.nn.lrn(act2, bitreader.get_sentence_vector_length(1), bias=1.0, alpha=0.001, beta=0.75)
 	# TensorShape([Dimension(None), Dimension(1), Dimension(4620), Dimension(32)])
 
 	# Conv -> FC
-	dims = act2.get_shape()
-	shape = [dims[0].value, dims[1].value, dims[2].value, dims[3].value] # dims[0].value -> None
-	c_fc = tf.reshape(act2, [-1, shape[1]*shape[2]*shape[3]])
+	# Record encoder shapes for later use.
+	act2_shape = act2.get_shape().as_list()
+	act1_shape = act1.get_shape().as_list()
+	input_shape = inputs.get_shape().as_list()
 
-	wf1 = tf.Variable(tf.random_normal([shape[1]*shape[2]*shape[3], 128]))
-	full1 = tf.matmul(c_fc, wf1)
+	# Resize
+	c_fc = tf.reshape(act2, [-1, act2_shape[1]*act2_shape[2]*act2_shape[3]])
+
+	# FC segments
+	wf1 = tf.Variable(tf.random_normal([act2_shape[1]*act2_shape[2]*act2_shape[3], filter_bank_3]))
+	bf1 = tf.Variable(tf.random_normal([filter_bank_3,]))
+	full1 = tf.matmul(c_fc, wf1) + bf1
 	act3 = tf.nn.relu(full1)
 
+	# Our prized encoder.
 	encoder = act3
 
-	wf2 = tf.Variable(tf.random_normal([128, shape[1]*shape[2]*shape[3]]))
-	full2 = tf.matmul(act3, wf2)
+	# Invert steps and begin decoder.
+	# Start with FC.
+	wf2 = tf.Variable(tf.random_normal([filter_bank_3, act2_shape[1]*act2_shape[2]*act2_shape[3]]))
+	bf2 = tf.Variable(tf.random_normal([act2_shape[1]*act2_shape[2]*act2_shape[3],]))
+	full2 = tf.matmul(act3, wf2) + bf2
 	act4 = tf.nn.relu(full2)
 
 	# FC -> Conv
-	fc_c = tf.reshape(act4, [-1, shape[1], shape[2], shape[3]])
+	fc_c = tf.reshape(act4, [-1, act2_shape[1], act2_shape[2], act2_shape[3]])
 
-	wc3 = tf.Variable(tf.random_normal([1, char_sample_size, 32, 64]))
-	bc3 = tf.Variable(tf.random_normal([64,]))
-	conv3 = tf.nn.conv2d(fc_c, wc3, strides=[1, 1, 1, 1], padding='SAME')# + bc3
+	wc3 = tf.Variable(tf.random_normal([1, char_sample_size, filter_bank_0, filter_bank_1]))
+	bc3 = tf.Variable(tf.random_normal([act1_shape[1], act1_shape[2], act1_shape[3]]))
+	conv3 = tf.nn.deconv2d(fc_c, wc3, strides=[1, 1, 1, 1], padding='SAME', output_shape=[-1, act1_shape[1], act1_shape[2], act1_shape[3]]) + bc3
 	act5 = tf.nn.relu(conv3)
 	# TensorShape([Dimension(None), Dimension(1), Dimension(4620), Dimension(64)])
 
-	wc4 = tf.Variable(tf.random_normal([1, sample_vec_len, 64, 1]))
-	bc4 = tf.Variable(tf.random_normal([1,]))
-	conv4 = tf.nn.conv2d(act5, wc4, strides=[1, 1, 1, 1], padding='SAME')# + bc4
+	wc4 = tf.Variable(tf.random_normal([1, sample_vec_len, 1, filter_bank_0]))
+	bc4 = tf.Variable(tf.random_normal([input_shape[1], input_shape[2], input_shape[3]]))
+	conv4 = tf.nn.deconv2d(act5, wc4, strides=[1, 1, 1, 1], padding='SAME', output_shape=[-1, input_shape[1], input_shape[2], input_shape[3]]) + bc4
 	act6 = tf.nn.relu(conv4)
 	norm3 = tf.nn.lrn(act6, bitreader.get_sentence_vector_length(1), bias=1.0, alpha=0.001, beta=0.75)
 
@@ -83,14 +97,12 @@ def build_model(name, inputs, dropout_toggle, char_sample_size=WORD_CHUNK_SIZE):
 
 	return encoder, decoder, [wc1, wc2, wf1, wf2, wc3, wc4], [bc1, bc2, bc3, bc4]
 
-def max_pool(name, l_input, k):
-	return tf.nn.max_pool(l_input, ksize=[1, 1, k, 1], strides=[1, 1, k, 1], padding='SAME', name=name)
+	#return tf.nn.max_pool(l_input, ksize=[1, 1, k, 1], strides=[1, 1, k, 1], padding='SAME', name=name)
 
-def norm(name, l_input, lsize):
-	return tf.nn.lrn(l_input, lsize, bias=1.0, alpha=0.001 / 9.0, beta=0.75, name=name)
-
+print("Building model.")
 encoder, decoder, weights, biases = build_model("ConvNLP", x, keep_prob)
 
+print("Defining loss functions and optimizer.")
 #l2_cost = tf.reduce_sum(tf.nn.l2_loss(reconstruction, x))
 l1_cost = tf.reduce_sum(tf.abs(tf.sub(x, decoder)))
 cost = l1_cost
@@ -120,12 +132,17 @@ def batch_buffer(filename=INPUT_FILENAME, batch_size=BATCH_SIZE):
 		yield batch
 
 # Train
+print("Gathering variables.")
 init = tf.initialize_all_variables()
 saver = tf.train.Saver()
+
+print("Beginning training session.")
 with tf.Session() as sess:
+	print("Initializing variables.")
 	sess.run(init)
 	step = 1
 	generator = batch_buffer()
+	print("Session, variables, and generator initialized.  Training.")
 	for step, batch_xs in zip(range(TRAINING_ITERATIONS/BATCH_SIZE), generator):
 		sess.run(optimizer, feed_dict={x: batch_xs, keep_prob: DROPOUT})
 		if step % DISPLAY_INCREMENT == 0:

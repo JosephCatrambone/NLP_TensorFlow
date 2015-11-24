@@ -14,8 +14,7 @@ CHARACTER_INDEX_MAP = {v:k for k,v in enumerate(CHARSET)} # letter -> index
 def get_sentence_vector_length(character_limit):
 	return character_limit*len(CHARSET)
 
-def string_to_vector(sentence, single_row=True):
-	"""Convert a string into a matrix.  By default, returns a single-row of digits.  Can be made to return a matrix with single_row=False."""
+def string_to_vector(sentence, flatten=True):
 	vector = list()
 	for character in sentence.lower():
 		subvector = numpy.zeros(len(CHARSET))
@@ -23,12 +22,14 @@ def string_to_vector(sentence, single_row=True):
 			subvector[CHARACTER_INDEX_MAP[character]] = 1.0
 		vector.append(subvector)
 	result = numpy.asarray(vector)
-	if single_row:
+	if flatten:
 		result = result.reshape(1,-1)[0]
 	return result
 
 def vector_to_string(vector):
-	# Assumes single vector.  Numpy.shape should show (n,) for some number n.
+	# Flatten if in square setup.
+	if vector.ndim == 2:
+		vector = vector.reshape(1,-1)[0]
 	s = ""
 	# Step through vector in CHARSET increments.
 	block_length = len(CHARSET)
